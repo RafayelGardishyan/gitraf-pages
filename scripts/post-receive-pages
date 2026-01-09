@@ -1,0 +1,67 @@
+#!/bin/bash
+# post-receive-pages hook for gitraf pages deployment
+
+REPO_DIR="$PWD"
+REPO_NAME=$(basename "$REPO_DIR" .git)
+PAGES_DIR="/opt/ogit/pages/$REPO_NAME"
+CONFIG_FILE="$REPO_DIR/git-pages.json"
+
+# Check if pages config exists
+if [ ! -f "$CONFIG_FILE" ]; then
+    exit 0
+fi
+
+# Parse config using jq
+ENABLED=$(jq -r ".enabled // true" "$CONFIG_FILE")
+BRANCH=$(jq -r ".branch // \"main\"" "$CONFIG_FILE")
+BUILD_CMD=$(jq -r ".build_command // \"\"" "$CONFIG_FILE")
+OUTPUT_DIR=$(jq -r ".output_dir // \"public\"" "$CONFIG_FILE")
+
+if [ "$ENABLED" != "true" ]; then
+    exit 0
+fi
+
+# Check if the pushed branch matches configured branch
+while read oldrev newrev refname; do
+    PUSHED_BRANCH=$(basename "$refname")
+    if [ "$PUSHED_BRANCH" != "$BRANCH" ]; then
+        continue
+    fi
+
+    echo "==> Deploying $REPO_NAME to $REPO_NAME.rafayel.dev"
+
+    # Create directories
+    mkdir -p "$PAGES_DIR/build" "$PAGES_DIR/site"
+
+    # Checkout full repo for build
+    git --work-tree="$PAGES_DIR/build" checkout -f "$BRANCH"
+
+    # Run build command if specified
+    if [ -n "$BUILD_CMD" ] && [ "$BUILD_CMD" != "null" ]; then
+        echo "==> Running build: $BUILD_CMD"
+        cd "$PAGES_DIR/build"
+
+        # Install dependencies if package.json exists
+        if [ -f "package.json" ]; then
+            echo "==> Installing dependencies..."
+            npm ci --silent 2>/dev/null || npm install --silent
+        fi
+
+        # Run build
+        eval "$BUILD_CMD"
+
+        if [ $? -ne 0 ]; then
+            echo "==> Build failed!"
+            exit 1
+        fi
+    fi
+
+    # Copy output to site directory
+    if [ -d "$PAGES_DIR/build/$OUTPUT_DIR" ]; then
+        rsync -a --delete "$PAGES_DIR/build/$OUTPUT_DIR/" "$PAGES_DIR/site/"
+        echo "==> Deployed to https://$REPO_NAME.rafayel.dev"
+    else
+        echo "==> Error: Output directory '$OUTPUT_DIR' not found"
+        exit 1
+    fi
+done
